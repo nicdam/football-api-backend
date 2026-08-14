@@ -37,7 +37,7 @@ app.get('/api/fixtures/live', async (req, res) => {
 // Route 2: Upcoming Matches & Odds
 app.get('/api/fixtures/upcoming', async (req, res) => {
   try {
-    const cacheKey = 'upcoming_matches_odds';
+    const cacheKey = 'upcoming_matches_odds_v2';
 
     // 1. Try Redis Cache
     if (redis) {
