@@ -37,64 +37,64 @@ app.get('/api/fixtures/live', async (req, res) => {
 // Route 2: Upcoming Matches & Odds
 app.get('/api/fixtures/upcoming', async (req, res) => {
   try {
-    const cacheKey = 'upcoming_matches_odds_v2';
+    const cacheKey = 'upcoming_matches_v3';
 
-    // 1. Try Redis Cache
+    // 1. Check Redis Cache
     if (redis) {
       try {
         const cachedData = await redis.get(cacheKey);
         if (cachedData) {
-          console.log('Serving from Redis!');
+          console.log('Serving from Redis Cache!');
           return res.json(JSON.parse(cachedData));
         }
-      } catch (cacheErr) {
-        console.log('Cache read error, fetching directly from API...');
+      } catch (e) {
+        console.log('Redis error, bypassing...');
       }
     }
 
-    console.log('Fetching fresh data from API-Football...');
-    
-    const today = new Date();
-    const nextWeek = new Date();
-    nextWeek.setDate(today.getDate() + 7);
+    console.log('Fetching next 50 fixtures from API-Football...');
 
-    const fromDate = today.toISOString().split('T')[0];
-    const toDate = nextWeek.toISOString().split('T')[0];
-
-    // 2. Fetch Fixtures
-    const fixturesRes = await axios.get(`${BASE_URL}/fixtures?from=${fromDate}&to=${toDate}&timezone=Africa/Lagos`, {
+    // 2. Fetch Next 50 Fixtures (Guaranteed to work on free tier)
+    const fixturesRes = await axios.get(`${BASE_URL}/fixtures?next=50&timezone=Africa/Lagos`, {
       headers: { 'x-apisports-key': API_KEY }
     });
+
+    // Check if API-Football sent an internal error message
+    if (fixturesRes.data.errors && Object.keys(fixturesRes.data.errors).length > 0) {
+      console.log('API-Football Error:', fixturesRes.data.errors);
+    }
+
     const fixtures = fixturesRes.data.response || [];
 
-    // 3. Fetch Today's Odds safely
+    // 3. Fetch Today's Odds
+    const today = new Date().toISOString().split('T')[0];
     let oddsData = [];
     try {
-      const oddsRes = await axios.get(`${BASE_URL}/odds?date=${fromDate}&bookmaker=11`, {
+      const oddsRes = await axios.get(`${BASE_URL}/odds?date=${today}&bookmaker=11`, {
         headers: { 'x-apisports-key': API_KEY }
       });
       oddsData = oddsRes.data.response || [];
     } catch (oddsErr) {
-      console.log('Odds fetch skipped due to rate limit/error');
+      console.log('Odds fetch skipped');
     }
 
     // 4. Combine Fixtures and Odds
     const combinedData = fixtures.map(fixture => {
       const matchOdds = oddsData.find(o => o.fixture.id === fixture.fixture.id);
       let betOdds = null;
-      if (matchOdds && matchOdds.bookmakers[0]) {
+      if (matchOdds && matchOdds.bookmakers && matchOdds.bookmakers[0]) {
         const mainBet = matchOdds.bookmakers[0].bets.find(b => b.id === 1); 
         if (mainBet) betOdds = mainBet.values;
       }
       return { ...fixture, odds: betOdds };
     });
 
-    // 5. Save to Redis Cache (12 hours)
-    if (redis) {
+    // 5. Save to Cache for 12 hours
+    if (redis && combinedData.length > 0) {
       try {
         await redis.set(cacheKey, JSON.stringify(combinedData), 'EX', 43200);
       } catch (err) {
-        console.log('Could not save to cache');
+        console.log('Cache set failed');
       }
     }
 
@@ -103,9 +103,4 @@ app.get('/api/fixtures/upcoming', async (req, res) => {
     console.error('Server Error:', error.message);
     res.status(500).json({ error: 'Failed to fetch upcoming matches' });
   }
-});
-
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
 });
