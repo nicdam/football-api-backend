@@ -11,7 +11,7 @@ app.use(express.json());
 const API_KEY = process.env.API_FOOTBALL_KEY;
 const BASE_URL = 'https://v3.football.api-sports.io';
 
-// Connect to Redis with a 3-second connection timeout so it NEVER freezes the app
+// Setup Redis connection with a strict timeout to prevent hangs
 let redis = null;
 if (process.env.REDIS_URL) {
   redis = new Redis(process.env.REDIS_URL, {
@@ -19,7 +19,7 @@ if (process.env.REDIS_URL) {
     connectTimeout: 3000,
     enableOfflineQueue: false
   });
-  redis.on('error', (err) => console.log('Redis connection issue, bypassing cache...'));
+  redis.on('error', () => console.log('Redis connection issue, bypassing cache...'));
 }
 
 // Route 1: Live Matches
@@ -37,36 +37,35 @@ app.get('/api/fixtures/live', async (req, res) => {
 // Route 2: Upcoming Matches & Odds
 app.get('/api/fixtures/upcoming', async (req, res) => {
   try {
-    const cacheKey = 'upcoming_matches_v3';
+    const cacheKey = 'upcoming_matches_v4';
 
-    // 1. Check Redis Cache
+    // 1. Try Redis Cache First
     if (redis) {
       try {
         const cachedData = await redis.get(cacheKey);
         if (cachedData) {
-          console.log('Serving from Redis Cache!');
+          console.log('Serving instantly from Redis Cache!');
           return res.json(JSON.parse(cachedData));
         }
       } catch (e) {
-        console.log('Redis error, bypassing...');
+        console.log('Redis read error, fetching from API...');
       }
     }
 
     console.log('Fetching next 50 fixtures from API-Football...');
 
-    // 2. Fetch Next 50 Fixtures (Guaranteed to work on free tier)
+    // 2. Fetch Next 50 Fixtures (Reliable free-tier endpoint)
     const fixturesRes = await axios.get(`${BASE_URL}/fixtures?next=50&timezone=Africa/Lagos`, {
       headers: { 'x-apisports-key': API_KEY }
     });
 
-    // Check if API-Football sent an internal error message
     if (fixturesRes.data.errors && Object.keys(fixturesRes.data.errors).length > 0) {
-      console.log('API-Football Error:', fixturesRes.data.errors);
+      console.log('API-Football Error/Message:', fixturesRes.data.errors);
     }
 
     const fixtures = fixturesRes.data.response || [];
 
-    // 3. Fetch Today's Odds
+    // 3. Fetch Today's Odds safely
     const today = new Date().toISOString().split('T')[0];
     let oddsData = [];
     try {
@@ -89,12 +88,12 @@ app.get('/api/fixtures/upcoming', async (req, res) => {
       return { ...fixture, odds: betOdds };
     });
 
-    // 5. Save to Cache for 12 hours
+    // 5. Cache result for 12 hours
     if (redis && combinedData.length > 0) {
       try {
         await redis.set(cacheKey, JSON.stringify(combinedData), 'EX', 43200);
       } catch (err) {
-        console.log('Cache set failed');
+        console.log('Cache save failed');
       }
     }
 
@@ -103,4 +102,10 @@ app.get('/api/fixtures/upcoming', async (req, res) => {
     console.error('Server Error:', error.message);
     res.status(500).json({ error: 'Failed to fetch upcoming matches' });
   }
+});
+
+// Explicit port listener bound to 0.0.0.0 for Render
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server running on port ${PORT}`);
 });
