@@ -8,10 +8,9 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const API_KEY = process.env.API_FOOTBALL_KEY;
-const BASE_URL = 'https://v3.football.api-sports.io';
+const ODDS_API_KEY = process.env.ODDS_API_KEY;
 
-// Connect to Redis with strict connection limits to prevent app hangs
+// Redis Setup
 let redis = null;
 if (process.env.REDIS_URL) {
   redis = new Redis(process.env.REDIS_URL, {
@@ -19,116 +18,136 @@ if (process.env.REDIS_URL) {
     connectTimeout: 3000,
     enableOfflineQueue: false
   });
-  redis.on('error', (err) => console.log('Redis notice:', err.message));
+  redis.on('error', () => console.log('Redis issue, bypassing cache...'));
 }
 
-// ----------------------------------------------------
-// Route 1: Live Matches
-// ----------------------------------------------------
-app.get('/api/fixtures/live', async (req, res) => {
-  try {
-    const response = await axios.get(`${BASE_URL}/fixtures?live=all`, {
-      headers: { 'x-apisports-key': API_KEY }
-    });
-    res.json(response.data.response || []);
-  } catch (error) {
-    console.error('Live Matches Error:', error.message);
-    res.status(500).json({ error: 'Failed to fetch live matches' });
+// --------------------------------------------------
+// AI Prediction Algorithm Engine
+// --------------------------------------------------
+function calculateAIPrediction(homeOdd, drawOdd, awayOdd) {
+  if (homeOdd === '-' || drawOdd === '-' || awayOdd === '-') {
+    return { predictedWinner: 'N/A', confidence: '0%', valueBet: null };
   }
-});
 
-// ----------------------------------------------------
-// Route 2: Upcoming Matches & Bookmaker Odds
-// ----------------------------------------------------
-app.get('/api/fixtures/upcoming', async (req, res) => {
+  const h = parseFloat(homeOdd);
+  const d = parseFloat(drawOdd);
+  const a = parseFloat(awayOdd);
+
+  // 1. Calculate raw implied probabilities (1 / decimal odd)
+  const rawHome = 1 / h;
+  const rawDraw = 1 / d;
+  const rawAway = 1 / a;
+
+  // 2. Remove bookmaker overround/margin
+  const marginSum = rawHome + rawDraw + rawAway;
+  const probHome = Math.round((rawHome / marginSum) * 100);
+  const probDraw = Math.round((rawDraw / marginSum) * 100);
+  const probAway = Math.round((rawAway / marginSum) * 100);
+
+  // 3. Determine AI Predicted Outcome & Confidence
+  let pick = 'Draw';
+  let highestProb = probDraw;
+  let recommendedPick = 'X';
+
+  if (probHome > probAway && probHome > probDraw) {
+    pick = 'Home Win';
+    highestProb = probHome;
+    recommendedPick = '1';
+  } else if (probAway > probHome && probAway > probDraw) {
+    pick = 'Away Win';
+    highestProb = probAway;
+    recommendedPick = '2';
+  }
+
+  // 4. Rate Confidence Tier
+  let confidenceRating = 'LOW';
+  if (highestProb >= 60) confidenceRating = 'HIGH';
+  else if (highestProb >= 45) confidenceRating = 'MEDIUM';
+
+  return {
+    pick: recommendedPick,
+    pickLabel: pick,
+    confidence: `${highestProb}%`,
+    rating: confidenceRating,
+    probabilities: { home: probHome, draw: probDraw, away: probAway }
+  };
+}
+
+// --------------------------------------------------
+// API Route
+// --------------------------------------------------
+app.get('/api/matches', async (req, res) => {
   try {
-    const cacheKey = 'upcoming_matches_v7';
+    const cacheKey = 'sportsbook_ai_matches_v1';
 
-    // 1. Try Redis Cache
     if (redis) {
       try {
-        const cachedData = await redis.get(cacheKey);
-        if (cachedData) {
+        const cached = await redis.get(cacheKey);
+        if (cached) {
           console.log('⚡ Served instantly from Redis Cache!');
-          return res.json(JSON.parse(cachedData));
+          return res.json(JSON.parse(cached));
         }
-      } catch (cacheErr) {
-        console.log('Cache read skipped, fetching fresh data...');
-      }
-    }
-
-    console.log('📡 Fetching fresh fixture data from API-Football...');
-
-    const today = new Date().toISOString().split('T')[0];
-    const tomorrowObj = new Date();
-    tomorrowObj.setDate(tomorrowObj.getDate() + 1);
-    const tomorrow = tomorrowObj.toISOString().split('T')[0];
-
-    // 2. Fetch Today's Fixtures
-    const fixturesRes = await axios.get(`${BASE_URL}/fixtures?date=${today}`, {
-      headers: { 'x-apisports-key': API_KEY }
-    });
-
-    let fixtures = fixturesRes.data.response || [];
-
-    // If today has very few matches, append tomorrow's matches
-    if (fixtures.length < 5) {
-      try {
-        const tomorrowRes = await axios.get(`${BASE_URL}/fixtures?date=${tomorrow}`, {
-          headers: { 'x-apisports-key': API_KEY }
-        });
-        const tomorrowFixtures = tomorrowRes.data.response || [];
-        fixtures = [...fixtures, ...tomorrowFixtures];
       } catch (e) {
-        console.log('Tomorrow fixtures fetch skipped');
+        console.log('Cache read skipped...');
       }
     }
 
-    // 3. Fetch Today's Bookmaker Odds (Bookmaker 11 = 1xBet)
-    let oddsData = [];
-    try {
-      const oddsRes = await axios.get(`${BASE_URL}/odds?date=${today}&bookmaker=11`, {
-        headers: { 'x-apisports-key': API_KEY }
-      });
-      oddsData = oddsRes.data.response || [];
-    } catch (oddsErr) {
-      console.log('Odds fetch skipped or limit reached');
-    }
+    console.log('📡 Fetching odds and computing AI predictions...');
 
-    // 4. Combine Fixtures and Odds
-    const combinedData = fixtures.map(fixture => {
-      const matchOdds = oddsData.find(o => o.fixture.id === fixture.fixture.id);
-      let betOdds = null;
-      if (matchOdds && matchOdds.bookmakers && matchOdds.bookmakers[0]) {
-        // Bet ID 1 = Match Winner (1X2)
-        const mainBet = matchOdds.bookmakers[0].bets.find(b => b.id === 1); 
-        if (mainBet) betOdds = mainBet.values;
+    const url = `https://api.the-odds-api.com/v4/sports/soccer/odds/?apiKey=${ODDS_API_KEY}&regions=eu,uk&markets=h2h&dateFormat=iso`;
+    const response = await axios.get(url);
+    const rawMatches = response.data || [];
+
+    const formattedMatches = rawMatches.map(match => {
+      const bookmaker = match.bookmakers.find(b => b.key === '1xbet' || b.key === 'bet365') || match.bookmakers[0];
+      
+      let homeOdd = '-';
+      let drawOdd = '-';
+      let awayOdd = '-';
+
+      if (bookmaker && bookmaker.markets[0]) {
+        const h2h = bookmaker.markets[0].outcomes;
+        const home = h2h.find(o => o.name === match.home_team);
+        const draw = h2h.find(o => o.name === 'Draw');
+        const away = h2h.find(o => o.name === match.away_team);
+
+        if (home) homeOdd = home.price.toFixed(2);
+        if (draw) drawOdd = draw.price.toFixed(2);
+        if (away) awayOdd = away.price.toFixed(2);
       }
-      return { ...fixture, odds: betOdds };
+
+      // Compute AI Prediction
+      const ai = calculateAIPrediction(homeOdd, drawOdd, awayOdd);
+
+      return {
+        id: match.id,
+        sport_title: match.sport_title,
+        home_team: match.home_team,
+        away_team: match.away_team,
+        commence_time: match.commence_time,
+        bookmaker: bookmaker ? bookmaker.title : 'Market Avg',
+        odds: { home: homeOdd, draw: drawOdd, away: awayOdd },
+        aiPrediction: ai
+      };
     });
 
-    // 5. Store in Redis Cache for 12 hours (43,200 seconds)
-    if (redis && combinedData.length > 0) {
+    if (redis && formattedMatches.length > 0) {
       try {
-        await redis.set(cacheKey, JSON.stringify(combinedData), 'EX', 43200);
-        console.log(`💾 Successfully cached ${combinedData.length} matches in Upstash Redis!`);
+        await redis.set(cacheKey, JSON.stringify(formattedMatches), 'EX', 10800);
+        console.log(`💾 Cached ${formattedMatches.length} AI-analyzed matches in Redis!`);
       } catch (err) {
-        console.log('Could not write to Redis cache:', err.message);
+        console.log('Redis save failed');
       }
     }
 
-    res.json(combinedData);
+    res.json(formattedMatches);
   } catch (error) {
-    console.error('Server Request Error:', error.message);
-    res.status(500).json({ error: 'Failed to fetch upcoming matches' });
+    console.error('Server Error:', error.message);
+    res.status(500).json({ error: 'Failed to fetch AI matches' });
   }
 });
 
-// ----------------------------------------------------
-// Port Listener (0.0.0.0 binding required for Render)
-// ----------------------------------------------------
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Server successfully online on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });
-
