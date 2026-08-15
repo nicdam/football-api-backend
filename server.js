@@ -18,7 +18,7 @@ if (process.env.REDIS_URL) {
     connectTimeout: 3000,
     enableOfflineQueue: false
   });
-  redis.on('error', () => console.log('Redis issue, bypassing cache...'));
+  redis.on('error', () => console.log('Redis notice: connection issue, bypassing cache...'));
 }
 
 // --------------------------------------------------
@@ -26,14 +26,14 @@ if (process.env.REDIS_URL) {
 // --------------------------------------------------
 function calculateAIPrediction(homeOdd, drawOdd, awayOdd) {
   if (homeOdd === '-' || drawOdd === '-' || awayOdd === '-') {
-    return { predictedWinner: 'N/A', confidence: '0%', valueBet: null };
+    return { pick: 'N/A', pickLabel: 'Insufficient Odds', confidence: '0%', rating: 'LOW', probabilities: null };
   }
 
   const h = parseFloat(homeOdd);
   const d = parseFloat(drawOdd);
   const a = parseFloat(awayOdd);
 
-  // 1. Calculate raw implied probabilities (1 / decimal odd)
+  // 1. Calculate raw implied probabilities
   const rawHome = 1 / h;
   const rawDraw = 1 / d;
   const rawAway = 1 / a;
@@ -44,19 +44,19 @@ function calculateAIPrediction(homeOdd, drawOdd, awayOdd) {
   const probDraw = Math.round((rawDraw / marginSum) * 100);
   const probAway = Math.round((rawAway / marginSum) * 100);
 
-  // 3. Determine AI Predicted Outcome & Confidence
-  let pick = 'Draw';
+  // 3. Determine AI Predicted Outcome
+  let pick = 'X';
+  let pickLabel = 'Draw';
   let highestProb = probDraw;
-  let recommendedPick = 'X';
 
   if (probHome > probAway && probHome > probDraw) {
-    pick = 'Home Win';
+    pick = '1';
+    pickLabel = 'Home Win';
     highestProb = probHome;
-    recommendedPick = '1';
   } else if (probAway > probHome && probAway > probDraw) {
-    pick = 'Away Win';
+    pick = '2';
+    pickLabel = 'Away Win';
     highestProb = probAway;
-    recommendedPick = '2';
   }
 
   // 4. Rate Confidence Tier
@@ -65,8 +65,8 @@ function calculateAIPrediction(homeOdd, drawOdd, awayOdd) {
   else if (highestProb >= 45) confidenceRating = 'MEDIUM';
 
   return {
-    pick: recommendedPick,
-    pickLabel: pick,
+    pick,
+    pickLabel,
     confidence: `${highestProb}%`,
     rating: confidenceRating,
     probabilities: { home: probHome, draw: probDraw, away: probAway }
@@ -74,12 +74,13 @@ function calculateAIPrediction(homeOdd, drawOdd, awayOdd) {
 }
 
 // --------------------------------------------------
-// API Route
+// Aliased API Routes (Fixes 404 Errors)
 // --------------------------------------------------
-app.get('/api/matches', '/api/fixtures/upcoming', '/api/fixtures/live',) async (req, res) => {
+app.get(['/api/matches', '/api/fixtures/upcoming', '/api/fixtures/live'], async (req, res) => {
   try {
-    const cacheKey = 'sportsbook_ai_matches_v1';
+    const cacheKey = 'sportsbook_ai_matches_v2';
 
+    // 1. Try Redis Cache First
     if (redis) {
       try {
         const cached = await redis.get(cacheKey);
@@ -94,10 +95,12 @@ app.get('/api/matches', '/api/fixtures/upcoming', '/api/fixtures/live',) async (
 
     console.log('📡 Fetching odds and computing AI predictions...');
 
+    // 2. Query The Odds API (Soccer - Worldwide)
     const url = `https://api.the-odds-api.com/v4/sports/soccer/odds/?apiKey=${ODDS_API_KEY}&regions=eu,uk&markets=h2h&dateFormat=iso`;
     const response = await axios.get(url);
     const rawMatches = response.data || [];
 
+    // 3. Format Data & Run AI Prediction
     const formattedMatches = rawMatches.map(match => {
       const bookmaker = match.bookmakers.find(b => b.key === '1xbet' || b.key === 'bet365') || match.bookmakers[0];
       
@@ -131,6 +134,7 @@ app.get('/api/matches', '/api/fixtures/upcoming', '/api/fixtures/live',) async (
       };
     });
 
+    // 4. Save to Redis Cache for 3 Hours (10,800s)
     if (redis && formattedMatches.length > 0) {
       try {
         await redis.set(cacheKey, JSON.stringify(formattedMatches), 'EX', 10800);
@@ -147,6 +151,9 @@ app.get('/api/matches', '/api/fixtures/upcoming', '/api/fixtures/live',) async (
   }
 });
 
+// --------------------------------------------------
+// Explicit Host Listener for Render
+// --------------------------------------------------
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server running on port ${PORT}`);
