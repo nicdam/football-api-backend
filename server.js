@@ -116,8 +116,7 @@ const mockMatches = [
 // --------------------------------------------------
 app.get(['/api/matches', '/api/fixtures/upcoming', '/api/fixtures/live'], async (req, res) => {
   try {
-    const cacheKey = 'sportsbook_ai_matches_v3';
-
+	const cacheKey = 'sportsbook_ai_matches_v4';
     // 1. Try Cache First
     if (redis) {
       try {
