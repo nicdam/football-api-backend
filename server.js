@@ -76,7 +76,7 @@ function calculateAIPrediction(homeOdd, drawOdd, awayOdd) {
 // --------------------------------------------------
 // API Route
 // --------------------------------------------------
-app.get('[/api/matches', '/api/fixtures/upcoming', '/api/fixtures/live'], async (req, res) => {
+app.get('[/api/matches', '/api/fixtures/upcoming', '/api/fixtures/live']), async (req, res) => {
   try {
     const cacheKey = 'sportsbook_ai_matches_v1';
 
