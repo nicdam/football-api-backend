@@ -13,16 +13,11 @@ const ODDS_API_KEY = process.env.ODDS_API_KEY;
 // --------------------------------------------------
 // Redis Setup
 // --------------------------------------------------
-let redis = null;
-if (process.env.REDIS_URL) {
-  redis = new Redis(process.env.REDIS_URL, {
-    maxRetriesPerRequest: 1,
-    connectTimeout: 3000,
-    enableOfflineQueue: false
-  });
-  redis.on('error', () => console.log('Redis notice: connection issue, bypassing cache...'));
-}
-
+// --------------------------------------------------
+// Redis Setup (TEMPORARILY DISABLED)
+// --------------------------------------------------
+//let redis = null;
+// Force redis to null to bypass cache lookup/write entirely
 // --------------------------------------------------
 // AI Prediction Engine (Implied Probability & Odds Analysis)
 // --------------------------------------------------
