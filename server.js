@@ -10,7 +10,9 @@ app.use(express.json());
 
 const ODDS_API_KEY = process.env.ODDS_API_KEY;
 
+// --------------------------------------------------
 // Redis Setup
+// --------------------------------------------------
 let redis = null;
 if (process.env.REDIS_URL) {
   redis = new Redis(process.env.REDIS_URL, {
@@ -22,7 +24,7 @@ if (process.env.REDIS_URL) {
 }
 
 // --------------------------------------------------
-// AI Prediction Algorithm Engine
+// AI Prediction Engine (Implied Probability & Odds Analysis)
 // --------------------------------------------------
 function calculateAIPrediction(homeOdd, drawOdd, awayOdd) {
   if (homeOdd === '-' || drawOdd === '-' || awayOdd === '-') {
@@ -33,18 +35,18 @@ function calculateAIPrediction(homeOdd, drawOdd, awayOdd) {
   const d = parseFloat(drawOdd);
   const a = parseFloat(awayOdd);
 
-  // 1. Calculate raw implied probabilities
+  // Raw implied probabilities
   const rawHome = 1 / h;
   const rawDraw = 1 / d;
   const rawAway = 1 / a;
 
-  // 2. Remove bookmaker overround/margin
+  // Remove bookmaker margin/overround
   const marginSum = rawHome + rawDraw + rawAway;
   const probHome = Math.round((rawHome / marginSum) * 100);
   const probDraw = Math.round((rawDraw / marginSum) * 100);
   const probAway = Math.round((rawAway / marginSum) * 100);
 
-  // 3. Determine AI Predicted Outcome
+  // Determine predicted outcome
   let pick = 'X';
   let pickLabel = 'Draw';
   let highestProb = probDraw;
@@ -59,7 +61,7 @@ function calculateAIPrediction(homeOdd, drawOdd, awayOdd) {
     highestProb = probAway;
   }
 
-  // 4. Rate Confidence Tier
+  // Rate confidence level
   let confidenceRating = 'LOW';
   if (highestProb >= 60) confidenceRating = 'HIGH';
   else if (highestProb >= 45) confidenceRating = 'MEDIUM';
@@ -74,9 +76,8 @@ function calculateAIPrediction(homeOdd, drawOdd, awayOdd) {
 }
 
 // --------------------------------------------------
-// Aliased API Routes (Fixes 404 Errors)
+// Mock Fallback Matches (Ensures non-empty output)
 // --------------------------------------------------
-// Fallback Mock Data for Zero Downtime
 const mockMatches = [
   {
     id: 'mock_1',
@@ -97,13 +98,27 @@ const mockMatches = [
     bookmaker: 'Bet365',
     odds: { home: '2.25', draw: '3.50', away: '3.10' },
     aiPrediction: calculateAIPrediction('2.25', '3.50', '3.10')
+  },
+  {
+    id: 'mock_3',
+    sport_title: 'Serie A',
+    home_team: 'Inter Milan',
+    away_team: 'AC Milan',
+    commence_time: new Date(Date.now() + 14400000).toISOString(),
+    bookmaker: '1xBet',
+    odds: { home: '2.05', draw: '3.30', away: '3.80' },
+    aiPrediction: calculateAIPrediction('2.05', '3.30', '3.80')
   }
 ];
 
+// --------------------------------------------------
+// Main API Route Handler
+// --------------------------------------------------
 app.get(['/api/matches', '/api/fixtures/upcoming', '/api/fixtures/live'], async (req, res) => {
   try {
-    const cacheKey = 'sportsbook_ai_matches_v2';
+    const cacheKey = 'sportsbook_ai_matches_v3';
 
+    // 1. Try Cache First
     if (redis) {
       try {
         const cached = await redis.get(cacheKey);
@@ -118,12 +133,12 @@ app.get(['/api/matches', '/api/fixtures/upcoming', '/api/fixtures/live'], async 
 
     console.log('📡 Fetching odds from The Odds API...');
 
-    // Fetching upcoming matches across major global sports
+    // 2. Fetch upcoming matches across sports
     const url = `https://api.the-odds-api.com/v4/sports/upcoming/odds/?apiKey=${ODDS_API_KEY}&regions=eu,uk&markets=h2h&dateFormat=iso`;
     const response = await axios.get(url);
     const rawMatches = response.data || [];
 
-    // Filter down specifically to soccer matches
+    // 3. Filter down to soccer matches
     const soccerMatches = rawMatches.filter(m => m.sport_key && m.sport_key.startsWith('soccer_'));
 
     let formattedMatches = [];
@@ -163,9 +178,10 @@ app.get(['/api/matches', '/api/fixtures/upcoming', '/api/fixtures/live'], async 
     // Fallback to sample predictions if API yields no active matches
     const finalData = formattedMatches.length > 0 ? formattedMatches : mockMatches;
 
+    // Save to Redis Cache (3 Hours)
     if (redis && finalData.length > 0) {
       try {
-        await redis.set(cacheKey, JSON.stringify(finalData), 'EX', 3600);
+        await redis.set(cacheKey, JSON.stringify(finalData), 'EX', 10800);
       } catch (err) {
         console.log('Redis save failed');
       }
@@ -177,4 +193,12 @@ app.get(['/api/matches', '/api/fixtures/upcoming', '/api/fixtures/live'], async 
     // Serve fallback matches on API failure or rate limiting
     res.json(mockMatches);
   }
+});
+
+// --------------------------------------------------
+// Explicit Host Listener for Render
+// --------------------------------------------------
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 Server running on port ${PORT}`);
 });
